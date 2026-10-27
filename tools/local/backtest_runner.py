@@ -1,6 +1,13 @@
 """Replay the serving model over real M1 bars and report what is / isn't working.
 
-Usage: python tools/local/backtest_runner.py --days 30 [--threshold 0.20] [--out-dir artifacts/backtests]
+Usage: python tools/local/backtest_runner.py --days 30 [--threshold 0.35] [--out-dir artifacts/backtests]
+       [--gate none|argmax|prob] [--gate-threshold 0.36]
+
+--gate changes ONLY this backtest: a rule-generated BUY/SELL is kept only if the
+model agrees (argmax: model's top class is that side; prob: model's probability
+for that side >= --gate-threshold). Vetoed proposals become NO_TRADE. Production
+code is not modified. Caveat: the policy's cooldown/flip memory still advances on
+vetoed signals, so a gated run can differ from a hypothetical fully-gated policy.
 """
 import argparse
 import json
@@ -81,6 +88,41 @@ def max_drawdown(trades, start_eq):
     return round(dd, 2), round(dd / peak * 100, 2) if peak else None
 
 
+GATE_STATS = {"rule_trades": 0, "model_agrees": 0, "vetoed": 0}
+
+
+def install_gate(mode, threshold):
+    """Wrap FrozenPolicyRunner.evaluate with a model-agreement veto (backtest only)."""
+    from nexus_scalp.domain.enums import ActionType
+    from nexus_scalp.research import streaming_replay as sr
+
+    original = sr.FrozenPolicyRunner.evaluate
+
+    def evaluate(self, probs_tensor, tick, fv, regime_state=None):
+        proposal = original(self, probs_tensor, tick, fv, regime_state=regime_state)
+        action = str(getattr(proposal, "action", ""))
+        if "BUY" not in action and "SELL" not in action:
+            return proposal
+        probs = probs_tensor.reshape(-1).tolist()  # [no_trade, buy, sell]
+        side = 1 if "BUY" in action else 2
+        top = max(range(3), key=lambda i: probs[i])
+        agrees = top == side
+        GATE_STATS["rule_trades"] += 1
+        GATE_STATS["model_agrees"] += int(agrees)
+        if mode == "argmax":
+            keep = agrees
+        elif mode == "prob":
+            keep = probs[side] >= threshold
+        else:
+            keep = True
+        if keep:
+            return proposal
+        GATE_STATS["vetoed"] += 1
+        return proposal.model_copy(update={"action": ActionType.NO_TRADE})
+
+    sr.FrozenPolicyRunner.evaluate = evaluate
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--days", type=float, default=30)
@@ -88,8 +130,11 @@ def main():
     ap.add_argument("--threshold", type=float, default=0.35)  # live default (configs/base.yaml)
     ap.add_argument("--label", default="")
     ap.add_argument("--model", default=MODEL)
+    ap.add_argument("--gate", default="none", choices=["none", "argmax", "prob"])
+    ap.add_argument("--gate-threshold", type=float, default=0.36)
     ap.add_argument("--out-dir", default=str(REPO / "artifacts/backtests"))
     a = ap.parse_args()
+    install_gate(a.gate, a.gate_threshold)
 
     last = pl.read_parquet(BARS, columns=["time_utc"])["time_utc"].max().replace(tzinfo=UTC)
     end = datetime.fromisoformat(a.end).replace(tzinfo=UTC) if a.end else last + timedelta(minutes=1)
@@ -125,6 +170,7 @@ def main():
         "model": a.model,
         "window": {"start": start.isoformat(), "end": end.isoformat(), "days": a.days},
         "params": {"confidence_threshold": a.threshold},
+        "gate": {"mode": a.gate, "threshold": a.gate_threshold, **GATE_STATS},
         "bars": len(records),
         "decisions": run.decisions,
         "replay_seconds": round(elapsed, 1),

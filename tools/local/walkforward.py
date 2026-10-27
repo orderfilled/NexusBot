@@ -19,6 +19,7 @@ def run_week(args, window, out_dir):
     days = (end - start).total_seconds() / 86400
     cmd = [sys.executable, str(REPO / "tools/local/backtest_runner.py"), "--days", f"{days:g}",
            "--end", end.isoformat(), "--threshold", str(args.threshold),
+           "--gate", args.gate, "--gate-threshold", str(args.gate_threshold),
            "--model", args.model, "--out-dir", str(out_dir)]
     r = subprocess.run(cmd, capture_output=True, text=True, cwd=REPO)
     line = (r.stdout.strip().splitlines() or [r.stderr.strip()[-300:]])[-1]
@@ -54,8 +55,12 @@ def merge(out_dir):
         eq += w["pnl_usd"]
         peak = max(peak, eq)
         dd = max(dd, peak - eq)
+    gate = {k: sum(r.get("gate", {}).get(k, 0) for r in reports)
+            for k in ("rule_trades", "model_agrees", "vetoed")}
     summary = {
         "model": reports[0]["model"] if reports else None,
+        "gate": {"mode": reports[0]["gate"]["mode"] if reports else None,
+                 "threshold": reports[0]["gate"]["threshold"] if reports else None, **gate},
         "params": reports[0]["params"] if reports else None,
         "weeks": len(weeks),
         "trades": tot,
@@ -76,6 +81,8 @@ def main():
     ap.add_argument("--model", required=True)
     ap.add_argument("--threshold", type=float, default=0.35)
     ap.add_argument("--jobs", type=int, default=4)
+    ap.add_argument("--gate", default="none", choices=["none", "argmax", "prob"])
+    ap.add_argument("--gate-threshold", type=float, default=0.36)
     ap.add_argument("--label", required=True)
     a = ap.parse_args()
 
