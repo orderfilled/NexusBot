@@ -83,9 +83,9 @@ def max_drawdown(trades, start_eq):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--days", type=int, default=30)
+    ap.add_argument("--days", type=float, default=30)
     ap.add_argument("--end", default=None, help="ISO end date (default: last bar)")
-    ap.add_argument("--threshold", type=float, default=0.20)
+    ap.add_argument("--threshold", type=float, default=0.35)  # live default (configs/base.yaml)
     ap.add_argument("--label", default="")
     ap.add_argument("--model", default=MODEL)
     ap.add_argument("--out-dir", default=str(REPO / "artifacts/backtests"))

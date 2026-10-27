@@ -14,8 +14,10 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 
 
-def run_week(args, end, out_dir):
-    cmd = [sys.executable, str(REPO / "tools/local/backtest_runner.py"), "--days", "7",
+def run_week(args, window, out_dir):
+    start, end = window
+    days = (end - start).total_seconds() / 86400
+    cmd = [sys.executable, str(REPO / "tools/local/backtest_runner.py"), "--days", f"{days:g}",
            "--end", end.isoformat(), "--threshold", str(args.threshold),
            "--model", args.model, "--out-dir", str(out_dir)]
     r = subprocess.run(cmd, capture_output=True, text=True, cwd=REPO)
@@ -72,7 +74,7 @@ def main():
     ap.add_argument("--start", required=True)
     ap.add_argument("--end", required=True)
     ap.add_argument("--model", required=True)
-    ap.add_argument("--threshold", type=float, default=0.20)
+    ap.add_argument("--threshold", type=float, default=0.35)
     ap.add_argument("--jobs", type=int, default=4)
     ap.add_argument("--label", required=True)
     a = ap.parse_args()
@@ -80,13 +82,13 @@ def main():
     out_dir = REPO / "artifacts/backtests" / a.label
     out_dir.mkdir(parents=True, exist_ok=True)
     s, e = datetime.fromisoformat(a.start), datetime.fromisoformat(a.end)
-    ends = []
-    t = s + timedelta(days=7)
-    while t <= e + timedelta(days=6):
-        ends.append(min(t, e))
+    windows = []
+    t = s
+    while t < e:
+        windows.append((t, min(t + timedelta(days=7), e)))
         t += timedelta(days=7)
     with ThreadPoolExecutor(a.jobs) as ex:
-        list(ex.map(lambda x: run_week(a, x, out_dir), ends))
+        list(ex.map(lambda w: run_week(a, w, out_dir), windows))
     s = merge(out_dir)
     print(json.dumps({k: s[k] for k in ("weeks", "trades", "pnl_usd", "winning_weeks")}))
 
